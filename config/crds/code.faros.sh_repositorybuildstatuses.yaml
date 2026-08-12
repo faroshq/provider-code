@@ -4,18 +4,18 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: repositorycheckouts.code.kedge.faros.sh
+  name: repositorybuildstatuses.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: RepositoryCheckout
-    listKind: RepositoryCheckoutList
-    plural: repositorycheckouts
+    - faros
+    kind: RepositoryBuildStatus
+    listKind: RepositoryBuildStatusList
+    plural: repositorybuildstatuses
     shortNames:
-    - gcheckout
-    singular: repositorycheckout
+    - gbuildstatus
+    singular: repositorybuildstatus
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -25,11 +25,8 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.ref
-      name: Ref
-      type: string
-    - jsonPath: .status.commitSHA
-      name: Commit
+    - jsonPath: .status.run.conclusion
+      name: Conclusion
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -38,12 +35,12 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          RepositoryCheckout is a durable request to read a managed Repository's text
-          tree into a provider-owned source bundle — the CommitBundle flow in reverse
-          (docs/app-studio-template-sandboxes.md §5). Consumers (App Studio workspace
-          hydration, repo import) receive the files through the checkout MCP tool;
-          contents stay in the provider's bundle store so a repository tree never
-          bloats kcp/etcd.
+          RepositoryBuildStatus is a transient request to inspect (or re-run) a
+          managed Repository's CI build workflow through the host's Actions API. It is
+          the credentialed read the tenant-facing MCP layer cannot do itself: the
+          controller resolves the Connection credential, queries the host, and writes
+          the run status — including failed jobs' log tails — back onto status. The
+          build-doctor consumes it to diagnose and retry a broken build.
         properties:
           apiVersion:
             description: |-
@@ -63,56 +60,51 @@ spec:
           metadata:
             type: object
           spec:
-            description: RepositoryCheckoutSpec is the desired checkout operation.
+            description: RepositoryBuildStatusSpec is the desired inspection/re-run
+              request.
             properties:
+              action:
+                description: Action selects status (default) or rerun.
+                enum:
+                - status
+                - rerun
+                type: string
+              maxLogLines:
+                description: MaxLogLines caps the failure-log tail per failed job
+                  (status action).
+                maximum: 1000
+                minimum: 1
+                type: integer
               ref:
                 description: |-
-                  Ref is the branch, tag, or commit SHA to read. Empty uses the
-                  Repository's defaultBranch, then the host default.
+                  Ref is the commit SHA to inspect (status) or the branch to re-run on
+                  (rerun). Empty inspects the most recent run / re-runs the default branch.
                 maxLength: 255
                 type: string
               repositoryRef:
-                description: RepositoryRef names the Repository (same workspace) to
-                  read.
+                description: RepositoryRef names the Repository (same workspace) whose
+                  build to inspect.
                 maxLength: 253
+                minLength: 1
+                type: string
+              workflowFileName:
+                description: |-
+                  WorkflowFileName is the workflow file to inspect or dispatch
+                  (e.g. "faros-app-studio-build.yml").
+                maxLength: 255
                 minLength: 1
                 type: string
             required:
             - repositoryRef
+            - workflowFileName
             type: object
           status:
-            description: RepositoryCheckoutStatus is the observed result of the checkout
-              operation.
+            description: RepositoryBuildStatusStatus is the observed result.
             properties:
-              bundleRef:
-                description: |-
-                  BundleRef names the provider-owned bundle holding the checked-out
-                  files, scoped to this CR's cluster.
-                properties:
-                  digest:
-                    description: Digest is the expected bundle digest, usually sha256:<hex>.
-                    maxLength: 96
-                    type: string
-                  name:
-                    description: Name is the bundle object's provider-local name.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                required:
-                - name
-                type: object
-              commitSHA:
-                description: CommitSHA is the commit the tree was read at.
-                maxLength: 128
-                type: string
               completedAt:
-                description: CompletedAt is when the controller reached a terminal
-                  phase.
                 format: date-time
                 type: string
               conditions:
-                description: Conditions follows the standard Kubernetes conditions
-                  pattern.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -171,55 +163,56 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              dispatched:
+                description: Dispatched is true when a rerun action successfully fired.
+                type: boolean
               observedGeneration:
-                description: ObservedGeneration mirrors metadata.generation last reconciled.
                 format: int64
                 type: integer
               phase:
                 description: Phase is the coarse status for clients that do not parse
                   conditions.
-                enum:
-                - Pending
-                - Running
-                - Succeeded
-                - Failed
                 type: string
-              ref:
-                description: Ref is the branch/tag the backend resolved.
-                maxLength: 255
-                type: string
-              skipped:
-                description: |-
-                  Skipped lists repository paths the checkout left out (binary content,
-                  oversized files, tree/file-count caps), so consumers know the bundle is
-                  not the complete tree.
-                items:
-                  type: string
-                maxItems: 100
-                type: array
-              source:
-                description: |-
-                  Source records where the checked-out bundle landed, without contents.
-                  The bundle is deleted once its consumer reads it, so this reference is
-                  short-lived by design.
+              run:
+                description: Run is the inspected run (status action).
                 properties:
-                  digest:
-                    description: Digest is the bundle digest committed by the controller.
-                    maxLength: 96
+                  conclusion:
                     type: string
-                  fileCount:
-                    description: FileCount is the number of files in the bundle.
-                    type: integer
-                  size:
-                    description: Size is the total bundle size in bytes.
+                  found:
+                    description: Found is false when no run exists for the request.
+                    type: boolean
+                  headSHA:
+                    type: string
+                  htmlURL:
+                    type: string
+                  jobs:
+                    items:
+                      description: RepositoryBuildStatusJob is one job of the inspected
+                        run.
+                      properties:
+                        conclusion:
+                          description: Conclusion is success | failure | cancelled
+                            | ... | "" while running.
+                          type: string
+                        failureLog:
+                          description: FailureLog is a bounded tail of the job's logs,
+                            set only for a failed job.
+                          type: string
+                        name:
+                          type: string
+                        status:
+                          description: Status is queued | in_progress | completed.
+                          type: string
+                      type: object
+                    type: array
+                  runID:
                     format: int64
                     type: integer
+                  status:
+                    type: string
+                required:
+                - found
                 type: object
-              startedAt:
-                description: StartedAt is when the controller first picked up the
-                  request.
-                format: date-time
-                type: string
             type: object
         required:
         - spec

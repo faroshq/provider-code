@@ -1,32 +1,35 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260704-6d52bca.repositorycheckouts.code.kedge.faros.sh
+  name: v260609-fc69fa2.repositories.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: RepositoryCheckout
-    listKind: RepositoryCheckoutList
-    plural: repositorycheckouts
+    - faros
+    kind: Repository
+    listKind: RepositoryList
+    plural: repositories
     shortNames:
-    - gcheckout
-    singular: repositorycheckout
+    - grepo
+    singular: repository
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.repositoryRef
-      name: Repository
+    - jsonPath: .spec.connectionRef
+      name: Connection
       type: string
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .spec.name
+      name: Repo
       type: string
-    - jsonPath: .status.ref
-      name: Ref
+    - jsonPath: .spec.visibility
+      name: Visibility
       type: string
-    - jsonPath: .status.commitSHA
-      name: Commit
+    - jsonPath: .status.htmlURL
+      name: URL
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -34,12 +37,10 @@ spec:
     name: v1alpha1
     schema:
       description: |-
-        RepositoryCheckout is a durable request to read a managed Repository's text
-        tree into a provider-owned source bundle — the CommitBundle flow in reverse
-        (docs/app-studio-template-sandboxes.md §5). Consumers (App Studio workspace
-        hydration, repo import) receive the files through the checkout MCP tool;
-        contents stay in the provider's bundle store so a repository tree never
-        bloats kcp/etcd.
+        Repository is the desired state for one git repository on the host the
+        referenced Connection authenticates. The RepositoryController creates (and,
+        on delete, removes) the repo via the sub-provider backend and records its
+        URLs + host-side id in status.
       properties:
         apiVersion:
           description: |-
@@ -59,51 +60,62 @@ spec:
         metadata:
           type: object
         spec:
-          description: RepositoryCheckoutSpec is the desired checkout operation.
+          description: RepositorySpec is the desired state.
           properties:
-            ref:
+            autoInit:
               description: |-
-                Ref is the branch, tag, or commit SHA to read. Empty uses the
-                Repository's defaultBranch, then the host default.
-              maxLength: 255
-              type: string
-            repositoryRef:
-              description: RepositoryRef names the Repository (same workspace) to
-                read.
+                AutoInit creates an initial commit (README) so the repository has a
+                default branch immediately. Required if DeployKeys/clones must
+                succeed right after creation.
+              type: boolean
+            connectionRef:
+              description: ConnectionRef names the Connection (same workspace) whose
+                credential
               maxLength: 253
               minLength: 1
               type: string
+            defaultBranch:
+              description: |-
+                DefaultBranch names the initial default branch. Empty uses the host
+                default (e.g. "main").
+              maxLength: 255
+              type: string
+            description:
+              description: Description is set as the repository description on the
+                host.
+              maxLength: 2048
+              type: string
+            name:
+              description: |-
+                Name is the repository name on the git host (the path segment after
+                the owner). DNS-ish; the host enforces its own rules.
+              maxLength: 100
+              minLength: 1
+              type: string
+            owner:
+              description: |-
+                Owner overrides the Connection's owner for this single repository
+                (e.g. to create under a different org the same credential controls).
+                Empty inherits Connection.spec.owner.
+              maxLength: 100
+              type: string
+            visibility:
+              description: Visibility defaults to private when empty.
+              enum:
+              - private
+              - public
+              - internal
+              type: string
           required:
-          - repositoryRef
+          - connectionRef
+          - name
           type: object
         status:
-          description: RepositoryCheckoutStatus is the observed result of the checkout
-            operation.
+          description: RepositoryStatus is the observed state.
           properties:
-            bundleRef:
-              description: |-
-                BundleRef names the provider-owned bundle holding the checked-out
-                files, scoped to this CR's cluster.
-              properties:
-                digest:
-                  description: Digest is the expected bundle digest, usually sha256:<hex>.
-                  maxLength: 96
-                  type: string
-                name:
-                  description: Name is the bundle object's provider-local name.
-                  maxLength: 253
-                  minLength: 1
-                  type: string
-              required:
-              - name
-              type: object
-            commitSHA:
-              description: CommitSHA is the commit the tree was read at.
-              maxLength: 128
-              type: string
-            completedAt:
-              description: CompletedAt is when the controller reached a terminal phase.
-              format: date-time
+            cloneURL:
+              description: CloneURL is the HTTPS clone URL.
+              maxLength: 2048
               type: string
             conditions:
               description: Conditions follows the standard Kubernetes conditions pattern.
@@ -165,53 +177,21 @@ spec:
               x-kubernetes-list-map-keys:
               - type
               x-kubernetes-list-type: map
+            htmlURL:
+              description: HTMLURL is the browser URL of the repository.
+              maxLength: 2048
+              type: string
             observedGeneration:
               description: ObservedGeneration mirrors metadata.generation last reconciled.
               format: int64
               type: integer
-            phase:
-              description: Phase is the coarse status for clients that do not parse
-                conditions.
-              enum:
-              - Pending
-              - Running
-              - Succeeded
-              - Failed
+            repoID:
+              description: RepoID is the host-side numeric/opaque id of the repository.
+              maxLength: 64
               type: string
-            ref:
-              description: Ref is the branch/tag the backend resolved.
-              maxLength: 255
-              type: string
-            skipped:
-              description: |-
-                Skipped lists repository paths the checkout left out (binary content,
-                oversized files, tree/file-count caps), so consumers know the bundle is
-                not the complete tree.
-              items:
-                type: string
-              maxItems: 100
-              type: array
-            source:
-              description: |-
-                Source records where the checked-out bundle landed, without contents.
-                The bundle is deleted once its consumer reads it, so this reference is
-                short-lived by design.
-              properties:
-                digest:
-                  description: Digest is the bundle digest committed by the controller.
-                  maxLength: 96
-                  type: string
-                fileCount:
-                  description: FileCount is the number of files in the bundle.
-                  type: integer
-                size:
-                  description: Size is the total bundle size in bytes.
-                  format: int64
-                  type: integer
-              type: object
-            startedAt:
-              description: StartedAt is when the controller first picked up the request.
-              format: date-time
+            sshURL:
+              description: SSHURL is the SSH clone URL (used together with a DeployKey).
+              maxLength: 2048
               type: string
           type: object
       required:

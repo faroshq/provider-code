@@ -4,35 +4,32 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: repositories.code.kedge.faros.sh
+  name: connections.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: Repository
-    listKind: RepositoryList
-    plural: repositories
+    - faros
+    kind: Connection
+    listKind: ConnectionList
+    plural: connections
     shortNames:
-    - grepo
-    singular: repository
+    - gconn
+    singular: connection
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.connectionRef
-      name: Connection
+    - jsonPath: .spec.provider
+      name: Provider
       type: string
-    - jsonPath: .spec.name
-      name: Repo
+    - jsonPath: .spec.owner
+      name: Owner
       type: string
-    - jsonPath: .spec.visibility
-      name: Visibility
+    - jsonPath: .status.login
+      name: Login
       type: string
-    - jsonPath: .status.htmlURL
-      name: URL
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
+    - jsonPath: .status.conditions[?(@.type=="Validated")].status
+      name: Validated
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -41,10 +38,18 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Repository is the desired state for one git repository on the host the
-          referenced Connection authenticates. The RepositoryController creates (and,
-          on delete, removes) the repo via the sub-provider backend and records its
-          URLs + host-side id in status.
+          Connection binds a tenant to one git hosting account. It is the
+          credential anchor that Repository / DeployKey / Collaborator reference:
+          every git operation runs against the account this Connection authenticates.
+
+          The credential itself never lives on the CR — spec.secretRef points at a
+          Secret in the tenant workspace holding the token. The ConnectionController
+          resolves that Secret, calls the git host to verify it, and records the
+          authenticated login + granted scopes in status.
+
+          Credential type is pluggable via spec.type so the PAT model shipped in v1
+          can grow a GitHub App installation or OAuth flow later without changing any
+          consumer of this CR.
         properties:
           apiVersion:
             description: |-
@@ -64,66 +69,73 @@ spec:
           metadata:
             type: object
           spec:
-            description: RepositorySpec is the desired state.
+            description: ConnectionSpec is the desired state.
             properties:
-              autoInit:
+              baseURL:
                 description: |-
-                  AutoInit creates an initial commit (README) so the repository has a
-                  default branch immediately. Required if DeployKeys/clones must
-                  succeed right after creation.
-                type: boolean
-              connectionRef:
-                description: ConnectionRef names the Connection (same workspace) whose
-                  credential
-                maxLength: 253
-                minLength: 1
-                type: string
-              defaultBranch:
-                description: |-
-                  DefaultBranch names the initial default branch. Empty uses the host
-                  default (e.g. "main").
-                maxLength: 255
-                type: string
-              description:
-                description: Description is set as the repository description on the
-                  host.
+                  BaseURL overrides the default git host endpoint for self-hosted
+                  installs (GitHub Enterprise Server, self-managed GitLab). Empty
+                  targets the provider's public SaaS endpoint.
                 maxLength: 2048
-                type: string
-              name:
-                description: |-
-                  Name is the repository name on the git host (the path segment after
-                  the owner). DNS-ish; the host enforces its own rules.
-                maxLength: 100
-                minLength: 1
                 type: string
               owner:
                 description: |-
-                  Owner overrides the Connection's owner for this single repository
-                  (e.g. to create under a different org the same credential controls).
-                  Empty inherits Connection.spec.owner.
+                  Owner is the org or user under which repositories created via this
+                  Connection land. Must be an account the credential can write to.
                 maxLength: 100
+                minLength: 1
                 type: string
-              visibility:
-                description: Visibility defaults to private when empty.
+              provider:
+                description: 'Provider names the git hosting sub-provider. v1: github.'
                 enum:
-                - private
-                - public
-                - internal
+                - github
+                type: string
+              secretRef:
+                description: |-
+                  SecretRef points at the Secret in the tenant workspace holding the
+                  credential. For type=pat the default key is "token".
+                properties:
+                  key:
+                    description: |-
+                      Key is the entry within the Secret's data holding the value. For a
+                      Connection PAT this defaults to "token"; for a DeployKey private
+                      key the controller writes "ssh-privatekey".
+                    maxLength: 253
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the Secret. Empty resolves to the provider's
+                      convention namespace ("default").
+                    maxLength: 253
+                    type: string
+                required:
+                - name
+                type: object
+              type:
+                description: 'Type selects the credential model. v1: pat.'
+                enum:
+                - pat
+                - github-app
+                - oauth
                 type: string
             required:
-            - connectionRef
-            - name
+            - owner
+            - provider
+            - secretRef
+            - type
             type: object
           status:
-            description: RepositoryStatus is the observed state.
+            description: ConnectionStatus is the observed state.
             properties:
-              cloneURL:
-                description: CloneURL is the HTTPS clone URL.
-                maxLength: 2048
-                type: string
               conditions:
-                description: Conditions follows the standard Kubernetes conditions
-                  pattern.
+                description: |-
+                  Conditions follows the standard Kubernetes conditions pattern. The
+                  Validated condition is True once the credential authenticates.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -182,22 +194,23 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              htmlURL:
-                description: HTMLURL is the browser URL of the repository.
-                maxLength: 2048
+              login:
+                description: |-
+                  Login is the authenticated account the credential resolved to
+                  (e.g. the GitHub login). Empty until first successful validation.
+                maxLength: 100
                 type: string
               observedGeneration:
                 description: ObservedGeneration mirrors metadata.generation last reconciled.
                 format: int64
                 type: integer
-              repoID:
-                description: RepoID is the host-side numeric/opaque id of the repository.
-                maxLength: 64
-                type: string
-              sshURL:
-                description: SSHURL is the SSH clone URL (used together with a DeployKey).
-                maxLength: 2048
-                type: string
+              scopes:
+                description: |-
+                  Scopes lists the granted token scopes the git host reported, when
+                  discoverable (GitHub returns them on the X-OAuth-Scopes header).
+                items:
+                  type: string
+                type: array
             type: object
         required:
         - spec

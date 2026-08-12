@@ -4,36 +4,33 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: packages.code.kedge.faros.sh
+  name: repositorycheckouts.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: Package
-    listKind: PackageList
-    plural: packages
+    - faros
+    kind: RepositoryCheckout
+    listKind: RepositoryCheckoutList
+    plural: repositorycheckouts
     shortNames:
-    - gpkg
-    singular: package
+    - gcheckout
+    singular: repositorycheckout
   scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.repositoryRef
       name: Repository
       type: string
-    - jsonPath: .status.packageName
-      name: Package
+    - jsonPath: .status.phase
+      name: Phase
       type: string
-    - jsonPath: .status.type
-      name: Type
+    - jsonPath: .status.ref
+      name: Ref
       type: string
-    - jsonPath: .status.versionCount
-      name: Versions
-      type: integer
-    - jsonPath: .status.lastSyncTime
-      name: Synced
-      type: date
+    - jsonPath: .status.commitSHA
+      name: Commit
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -41,17 +38,12 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Package is the observed set of artifacts (container image, npm/maven package,
-          …) published under a Repository on the git host. Unlike the other code-provider
-          CRs it is NOT tenant-authored desired state: the PackageController (a crawler)
-          lists the host on a timer and reconciles one Package CR per published package,
-          so the portal can read them straight from kcp instead of hitting the host on
-          every page view (which GitHub rate-limits hard). Each Package is owned by its
-          Repository via an OwnerReference, so host packages disappear from kcp when the
-          Repository CR is deleted.
-
-          All descriptive fields live in status because the whole object is observed,
-          never desired; spec carries only the link back to the owning Repository.
+          RepositoryCheckout is a durable request to read a managed Repository's text
+          tree into a provider-owned source bundle — the CommitBundle flow in reverse
+          (docs/app-studio-template-sandboxes.md §5). Consumers (App Studio workspace
+          hydration, repo import) receive the files through the checkout MCP tool;
+          contents stay in the provider's bundle store so a repository tree never
+          bloats kcp/etcd.
         properties:
           apiVersion:
             description: |-
@@ -71,16 +63,17 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              PackageSpec links the Package back to its owning Repository. Authored by the
-              PackageController on create and immutable thereafter — everything observed is
-              in status.
+            description: RepositoryCheckoutSpec is the desired checkout operation.
             properties:
-              repositoryRef:
+              ref:
                 description: |-
-                  RepositoryRef names the Repository (same workspace) this package is
-                  published under. Also mirrored onto the LabelRepository label so the
-                  portal can list a repository's packages with a label selector.
+                  Ref is the branch, tag, or commit SHA to read. Empty uses the
+                  Repository's defaultBranch, then the host default.
+                maxLength: 255
+                type: string
+              repositoryRef:
+                description: RepositoryRef names the Repository (same workspace) to
+                  read.
                 maxLength: 253
                 minLength: 1
                 type: string
@@ -88,9 +81,35 @@ spec:
             - repositoryRef
             type: object
           status:
-            description: PackageStatus is the observed package metadata as last crawled
-              from the host.
+            description: RepositoryCheckoutStatus is the observed result of the checkout
+              operation.
             properties:
+              bundleRef:
+                description: |-
+                  BundleRef names the provider-owned bundle holding the checked-out
+                  files, scoped to this CR's cluster.
+                properties:
+                  digest:
+                    description: Digest is the expected bundle digest, usually sha256:<hex>.
+                    maxLength: 96
+                    type: string
+                  name:
+                    description: Name is the bundle object's provider-local name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              commitSHA:
+                description: CommitSHA is the commit the tree was read at.
+                maxLength: 128
+                type: string
+              completedAt:
+                description: CompletedAt is when the controller reached a terminal
+                  phase.
+                format: date-time
+                type: string
               conditions:
                 description: Conditions follows the standard Kubernetes conditions
                   pattern.
@@ -152,82 +171,54 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              htmlURL:
-                description: HTMLURL links to the package's browser page.
-                maxLength: 2048
-                type: string
-              imageRepository:
-                description: |-
-                  ImageRepository is the pullable registry path (no tag/digest) for image
-                  packages, e.g. "ghcr.io/owner/repo/component". Combine with a version's
-                  digest to form a deployable reference. Empty for non-image packages.
-                maxLength: 512
-                type: string
-              lastSyncTime:
-                description: LastSyncTime is when the crawler last refreshed this
-                  package from the host.
-                format: date-time
-                type: string
               observedGeneration:
                 description: ObservedGeneration mirrors metadata.generation last reconciled.
                 format: int64
                 type: integer
-              packageName:
-                description: |-
-                  PackageName is the package's name on the host (the artifact name, which
-                  may differ from the Kubernetes object name).
+              phase:
+                description: Phase is the coarse status for clients that do not parse
+                  conditions.
+                enum:
+                - Pending
+                - Running
+                - Succeeded
+                - Failed
+                type: string
+              ref:
+                description: Ref is the branch/tag the backend resolved.
                 maxLength: 255
                 type: string
-              type:
-                description: 'Type is the package ecosystem: container | docker |
-                  npm | maven | rubygems | nuget.'
-                maxLength: 32
-                type: string
-              updatedAt:
-                description: UpdatedAt is the host's last-updated time in RFC3339,
-                  or "" when unknown.
-                maxLength: 64
-                type: string
-              versionCount:
-                description: VersionCount is how many versions the host reports (0
-                  when unknown).
-                format: int64
-                type: integer
-              versions:
+              skipped:
                 description: |-
-                  Versions is a bounded, most-recent-first list of the package's published
-                  versions with their tags and digest (populated for container/docker
-                  packages). It lets consumers resolve a build tag such as "sha-<commit>"
-                  to an immutable image digest.
+                  Skipped lists repository paths the checkout left out (binary content,
+                  oversized files, tree/file-count caps), so consumers know the bundle is
+                  not the complete tree.
                 items:
-                  description: |-
-                    PackageVersion is one published version of a package: an immutable digest and
-                    the tags pointing at it (a container image push creates one version).
-                  properties:
-                    createdAt:
-                      description: CreatedAt is the version's creation time in RFC3339,
-                        or "" when unknown.
-                      maxLength: 64
-                      type: string
-                    digest:
-                      description: Digest is the version's immutable content digest,
-                        e.g. "sha256:…".
-                      maxLength: 256
-                      type: string
-                    tags:
-                      description: Tags are the tags pointing at this digest (e.g.
-                        "sha-<commit>", "latest").
-                      items:
-                        type: string
-                      maxItems: 64
-                      type: array
-                  type: object
+                  type: string
                 maxItems: 100
                 type: array
-              visibility:
-                description: Visibility is "public", "internal", or "private" (host-reported;
-                  may be empty).
-                maxLength: 32
+              source:
+                description: |-
+                  Source records where the checked-out bundle landed, without contents.
+                  The bundle is deleted once its consumer reads it, so this reference is
+                  short-lived by design.
+                properties:
+                  digest:
+                    description: Digest is the bundle digest committed by the controller.
+                    maxLength: 96
+                    type: string
+                  fileCount:
+                    description: FileCount is the number of files in the bundle.
+                    type: integer
+                  size:
+                    description: Size is the total bundle size in bytes.
+                    format: int64
+                    type: integer
+                type: object
+              startedAt:
+                description: StartedAt is when the controller first picked up the
+                  request.
+                format: date-time
                 type: string
             type: object
         required:

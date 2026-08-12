@@ -1,32 +1,29 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260609-fc69fa2.repositories.code.kedge.faros.sh
+  name: v260609-fc69fa2.collaborators.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: Repository
-    listKind: RepositoryList
-    plural: repositories
+    - faros
+    kind: Collaborator
+    listKind: CollaboratorList
+    plural: collaborators
     shortNames:
-    - grepo
-    singular: repository
+    - gcollab
+    singular: collaborator
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.connectionRef
-      name: Connection
+    - jsonPath: .spec.repositoryRef
+      name: Repository
       type: string
-    - jsonPath: .spec.name
-      name: Repo
+    - jsonPath: .spec.username
+      name: User
       type: string
-    - jsonPath: .spec.visibility
-      name: Visibility
-      type: string
-    - jsonPath: .status.htmlURL
-      name: URL
+    - jsonPath: .spec.permission
+      name: Permission
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -37,10 +34,10 @@ spec:
     name: v1alpha1
     schema:
       description: |-
-        Repository is the desired state for one git repository on the host the
-        referenced Connection authenticates. The RepositoryController creates (and,
-        on delete, removes) the repo via the sub-provider backend and records its
-        URLs + host-side id in status.
+        Collaborator grants a host user a permission level on a single Repository.
+        Kept as its own CR (rather than an array on Repository) so each grant has
+        its own lifecycle, finalizer, and status — notably the InvitationPending
+        state the host reports when an outside collaborator must accept first.
       properties:
         apiVersion:
           description: |-
@@ -60,65 +57,38 @@ spec:
         metadata:
           type: object
         spec:
-          description: RepositorySpec is the desired state.
+          description: CollaboratorSpec is the desired state.
           properties:
-            autoInit:
-              description: |-
-                AutoInit creates an initial commit (README) so the repository has a
-                default branch immediately. Required if DeployKeys/clones must
-                succeed right after creation.
-              type: boolean
-            connectionRef:
-              description: ConnectionRef names the Connection (same workspace) whose
-                credential
+            permission:
+              description: Permission defaults to pull when empty.
+              enum:
+              - pull
+              - push
+              - admin
+              type: string
+            repositoryRef:
+              description: RepositoryRef names the Repository (same workspace) this
+                grant is on.
               maxLength: 253
               minLength: 1
               type: string
-            defaultBranch:
-              description: |-
-                DefaultBranch names the initial default branch. Empty uses the host
-                default (e.g. "main").
-              maxLength: 255
-              type: string
-            description:
-              description: Description is set as the repository description on the
-                host.
-              maxLength: 2048
-              type: string
-            name:
-              description: |-
-                Name is the repository name on the git host (the path segment after
-                the owner). DNS-ish; the host enforces its own rules.
+            username:
+              description: Username is the host login to grant access to.
               maxLength: 100
               minLength: 1
               type: string
-            owner:
-              description: |-
-                Owner overrides the Connection's owner for this single repository
-                (e.g. to create under a different org the same credential controls).
-                Empty inherits Connection.spec.owner.
-              maxLength: 100
-              type: string
-            visibility:
-              description: Visibility defaults to private when empty.
-              enum:
-              - private
-              - public
-              - internal
-              type: string
           required:
-          - connectionRef
-          - name
+          - repositoryRef
+          - username
           type: object
         status:
-          description: RepositoryStatus is the observed state.
+          description: CollaboratorStatus is the observed state.
           properties:
-            cloneURL:
-              description: CloneURL is the HTTPS clone URL.
-              maxLength: 2048
-              type: string
             conditions:
-              description: Conditions follows the standard Kubernetes conditions pattern.
+              description: |-
+                Conditions follows the standard Kubernetes conditions pattern. The
+                InvitationPending condition is True while the host reports the user
+                has been invited but not yet accepted.
               items:
                 description: Condition contains details for one aspect of the current
                   state of this API Resource.
@@ -177,22 +147,16 @@ spec:
               x-kubernetes-list-map-keys:
               - type
               x-kubernetes-list-type: map
-            htmlURL:
-              description: HTMLURL is the browser URL of the repository.
-              maxLength: 2048
+            invitationID:
+              description: |-
+                InvitationID is the host-side id of a pending invitation, set while
+                an outside collaborator has not yet accepted.
+              maxLength: 64
               type: string
             observedGeneration:
               description: ObservedGeneration mirrors metadata.generation last reconciled.
               format: int64
               type: integer
-            repoID:
-              description: RepoID is the host-side numeric/opaque id of the repository.
-              maxLength: 64
-              type: string
-            sshURL:
-              description: SSHURL is the SSH clone URL (used together with a DeployKey).
-              maxLength: 2048
-              type: string
           type: object
       required:
       - spec

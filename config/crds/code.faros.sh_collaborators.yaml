@@ -4,12 +4,12 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: collaborators.code.kedge.faros.sh
+  name: collaborators.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
+    - faros
     kind: Collaborator
     listKind: CollaboratorList
     plural: collaborators

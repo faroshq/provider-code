@@ -1,29 +1,29 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260609-fc69fa2.collaborators.code.kedge.faros.sh
+  name: v260609-fc69fa2.deploykeys.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: Collaborator
-    listKind: CollaboratorList
-    plural: collaborators
+    - faros
+    kind: DeployKey
+    listKind: DeployKeyList
+    plural: deploykeys
     shortNames:
-    - gcollab
-    singular: collaborator
+    - gkey
+    singular: deploykey
   scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.repositoryRef
       name: Repository
       type: string
-    - jsonPath: .spec.username
-      name: User
-      type: string
-    - jsonPath: .spec.permission
-      name: Permission
+    - jsonPath: .spec.readOnly
+      name: ReadOnly
+      type: boolean
+    - jsonPath: .status.keyID
+      name: KeyID
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -34,10 +34,12 @@ spec:
     name: v1alpha1
     schema:
       description: |-
-        Collaborator grants a host user a permission level on a single Repository.
-        Kept as its own CR (rather than an array on Repository) so each grant has
-        its own lifecycle, finalizer, and status — notably the InvitationPending
-        state the host reports when an outside collaborator must accept first.
+        DeployKey grants SSH access to a single Repository. It is the cross-provider
+        seam: when spec.publicKey is empty the controller generates a keypair,
+        registers the public half on the repository, and writes the private half to
+        a Secret in the tenant workspace (status.secretRef, owned by this CR so it
+        is garbage-collected on delete). Another provider (e.g. infrastructure) can
+        then mount that Secret to clone/push.
       properties:
         apiVersion:
           description: |-
@@ -57,38 +59,39 @@ spec:
         metadata:
           type: object
         spec:
-          description: CollaboratorSpec is the desired state.
+          description: DeployKeySpec is the desired state.
           properties:
-            permission:
-              description: Permission defaults to pull when empty.
-              enum:
-              - pull
-              - push
-              - admin
+            publicKey:
+              description: |-
+                PublicKey is an OpenSSH-format public key to register (bring your
+                own). When empty the controller generates an ed25519 keypair and
+                writes the private half to status.secretRef.
+              maxLength: 8192
               type: string
+            readOnly:
+              description: ReadOnly registers the key without write (push) access.
+              type: boolean
             repositoryRef:
-              description: RepositoryRef names the Repository (same workspace) this
-                grant is on.
+              description: |-
+                RepositoryRef names the Repository (same workspace) this key is
+                installed on.
               maxLength: 253
               minLength: 1
               type: string
-            username:
-              description: Username is the host login to grant access to.
-              maxLength: 100
-              minLength: 1
+            title:
+              description: |-
+                Title is the human-readable label shown on the host. Empty uses
+                metadata.name.
+              maxLength: 255
               type: string
           required:
           - repositoryRef
-          - username
           type: object
         status:
-          description: CollaboratorStatus is the observed state.
+          description: DeployKeyStatus is the observed state.
           properties:
             conditions:
-              description: |-
-                Conditions follows the standard Kubernetes conditions pattern. The
-                InvitationPending condition is True while the host reports the user
-                has been invited but not yet accepted.
+              description: Conditions follows the standard Kubernetes conditions pattern.
               items:
                 description: Condition contains details for one aspect of the current
                   state of this API Resource.
@@ -147,16 +150,41 @@ spec:
               x-kubernetes-list-map-keys:
               - type
               x-kubernetes-list-type: map
-            invitationID:
-              description: |-
-                InvitationID is the host-side id of a pending invitation, set while
-                an outside collaborator has not yet accepted.
+            keyID:
+              description: KeyID is the host-side id of the registered key.
               maxLength: 64
               type: string
             observedGeneration:
               description: ObservedGeneration mirrors metadata.generation last reconciled.
               format: int64
               type: integer
+            secretRef:
+              description: |-
+                SecretRef points at the Secret holding the generated private key
+                (key "ssh-privatekey"). Only set when the controller generated the
+                keypair (spec.publicKey was empty). The Secret is owned by this CR.
+              properties:
+                key:
+                  description: |-
+                    Key is the entry within the Secret's data holding the value. For a
+                    Connection PAT this defaults to "token"; for a DeployKey private
+                    key the controller writes "ssh-privatekey".
+                  maxLength: 253
+                  type: string
+                name:
+                  description: Name of the Secret.
+                  maxLength: 253
+                  minLength: 1
+                  type: string
+                namespace:
+                  description: |-
+                    Namespace of the Secret. Empty resolves to the provider's
+                    convention namespace ("default").
+                  maxLength: 253
+                  type: string
+              required:
+              - name
+              type: object
           type: object
       required:
       - spec

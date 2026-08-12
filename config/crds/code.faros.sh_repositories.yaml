@@ -4,29 +4,35 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: repositorybuildstatuses.code.kedge.faros.sh
+  name: repositories.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: RepositoryBuildStatus
-    listKind: RepositoryBuildStatusList
-    plural: repositorybuildstatuses
+    - faros
+    kind: Repository
+    listKind: RepositoryList
+    plural: repositories
     shortNames:
-    - gbuildstatus
-    singular: repositorybuildstatus
+    - grepo
+    singular: repository
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.repositoryRef
-      name: Repository
+    - jsonPath: .spec.connectionRef
+      name: Connection
       type: string
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .spec.name
+      name: Repo
       type: string
-    - jsonPath: .status.run.conclusion
-      name: Conclusion
+    - jsonPath: .spec.visibility
+      name: Visibility
+      type: string
+    - jsonPath: .status.htmlURL
+      name: URL
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -35,12 +41,10 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          RepositoryBuildStatus is a transient request to inspect (or re-run) a
-          managed Repository's CI build workflow through the host's Actions API. It is
-          the credentialed read the tenant-facing MCP layer cannot do itself: the
-          controller resolves the Connection credential, queries the host, and writes
-          the run status — including failed jobs' log tails — back onto status. The
-          build-doctor consumes it to diagnose and retry a broken build.
+          Repository is the desired state for one git repository on the host the
+          referenced Connection authenticates. The RepositoryController creates (and,
+          on delete, removes) the repo via the sub-provider backend and records its
+          URLs + host-side id in status.
         properties:
           apiVersion:
             description: |-
@@ -60,51 +64,66 @@ spec:
           metadata:
             type: object
           spec:
-            description: RepositoryBuildStatusSpec is the desired inspection/re-run
-              request.
+            description: RepositorySpec is the desired state.
             properties:
-              action:
-                description: Action selects status (default) or rerun.
-                enum:
-                - status
-                - rerun
-                type: string
-              maxLogLines:
-                description: MaxLogLines caps the failure-log tail per failed job
-                  (status action).
-                maximum: 1000
-                minimum: 1
-                type: integer
-              ref:
+              autoInit:
                 description: |-
-                  Ref is the commit SHA to inspect (status) or the branch to re-run on
-                  (rerun). Empty inspects the most recent run / re-runs the default branch.
-                maxLength: 255
-                type: string
-              repositoryRef:
-                description: RepositoryRef names the Repository (same workspace) whose
-                  build to inspect.
+                  AutoInit creates an initial commit (README) so the repository has a
+                  default branch immediately. Required if DeployKeys/clones must
+                  succeed right after creation.
+                type: boolean
+              connectionRef:
+                description: ConnectionRef names the Connection (same workspace) whose
+                  credential
                 maxLength: 253
                 minLength: 1
                 type: string
-              workflowFileName:
+              defaultBranch:
                 description: |-
-                  WorkflowFileName is the workflow file to inspect or dispatch
-                  (e.g. "kedge-app-studio-build.yml").
+                  DefaultBranch names the initial default branch. Empty uses the host
+                  default (e.g. "main").
                 maxLength: 255
+                type: string
+              description:
+                description: Description is set as the repository description on the
+                  host.
+                maxLength: 2048
+                type: string
+              name:
+                description: |-
+                  Name is the repository name on the git host (the path segment after
+                  the owner). DNS-ish; the host enforces its own rules.
+                maxLength: 100
                 minLength: 1
                 type: string
+              owner:
+                description: |-
+                  Owner overrides the Connection's owner for this single repository
+                  (e.g. to create under a different org the same credential controls).
+                  Empty inherits Connection.spec.owner.
+                maxLength: 100
+                type: string
+              visibility:
+                description: Visibility defaults to private when empty.
+                enum:
+                - private
+                - public
+                - internal
+                type: string
             required:
-            - repositoryRef
-            - workflowFileName
+            - connectionRef
+            - name
             type: object
           status:
-            description: RepositoryBuildStatusStatus is the observed result.
+            description: RepositoryStatus is the observed state.
             properties:
-              completedAt:
-                format: date-time
+              cloneURL:
+                description: CloneURL is the HTTPS clone URL.
+                maxLength: 2048
                 type: string
               conditions:
+                description: Conditions follows the standard Kubernetes conditions
+                  pattern.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -163,56 +182,22 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              dispatched:
-                description: Dispatched is true when a rerun action successfully fired.
-                type: boolean
+              htmlURL:
+                description: HTMLURL is the browser URL of the repository.
+                maxLength: 2048
+                type: string
               observedGeneration:
+                description: ObservedGeneration mirrors metadata.generation last reconciled.
                 format: int64
                 type: integer
-              phase:
-                description: Phase is the coarse status for clients that do not parse
-                  conditions.
+              repoID:
+                description: RepoID is the host-side numeric/opaque id of the repository.
+                maxLength: 64
                 type: string
-              run:
-                description: Run is the inspected run (status action).
-                properties:
-                  conclusion:
-                    type: string
-                  found:
-                    description: Found is false when no run exists for the request.
-                    type: boolean
-                  headSHA:
-                    type: string
-                  htmlURL:
-                    type: string
-                  jobs:
-                    items:
-                      description: RepositoryBuildStatusJob is one job of the inspected
-                        run.
-                      properties:
-                        conclusion:
-                          description: Conclusion is success | failure | cancelled
-                            | ... | "" while running.
-                          type: string
-                        failureLog:
-                          description: FailureLog is a bounded tail of the job's logs,
-                            set only for a failed job.
-                          type: string
-                        name:
-                          type: string
-                        status:
-                          description: Status is queued | in_progress | completed.
-                          type: string
-                      type: object
-                    type: array
-                  runID:
-                    format: int64
-                    type: integer
-                  status:
-                    type: string
-                required:
-                - found
-                type: object
+              sshURL:
+                description: SSHURL is the SSH clone URL (used together with a DeployKey).
+                maxLength: 2048
+                type: string
             type: object
         required:
         - spec

@@ -4,32 +4,32 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: connections.code.kedge.faros.sh
+  name: deploykeys.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: Connection
-    listKind: ConnectionList
-    plural: connections
+    - faros
+    kind: DeployKey
+    listKind: DeployKeyList
+    plural: deploykeys
     shortNames:
-    - gconn
-    singular: connection
+    - gkey
+    singular: deploykey
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.provider
-      name: Provider
+    - jsonPath: .spec.repositoryRef
+      name: Repository
       type: string
-    - jsonPath: .spec.owner
-      name: Owner
+    - jsonPath: .spec.readOnly
+      name: ReadOnly
+      type: boolean
+    - jsonPath: .status.keyID
+      name: KeyID
       type: string
-    - jsonPath: .status.login
-      name: Login
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Validated")].status
-      name: Validated
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -38,18 +38,12 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Connection binds a tenant to one git hosting account. It is the
-          credential anchor that Repository / DeployKey / Collaborator reference:
-          every git operation runs against the account this Connection authenticates.
-
-          The credential itself never lives on the CR — spec.secretRef points at a
-          Secret in the tenant workspace holding the token. The ConnectionController
-          resolves that Secret, calls the git host to verify it, and records the
-          authenticated login + granted scopes in status.
-
-          Credential type is pluggable via spec.type so the PAT model shipped in v1
-          can grow a GitHub App installation or OAuth flow later without changing any
-          consumer of this CR.
+          DeployKey grants SSH access to a single Repository. It is the cross-provider
+          seam: when spec.publicKey is empty the controller generates a keypair,
+          registers the public half on the repository, and writes the private half to
+          a Secret in the tenant workspace (status.secretRef, owned by this CR so it
+          is garbage-collected on delete). Another provider (e.g. infrastructure) can
+          then mount that Secret to clone/push.
         properties:
           apiVersion:
             description: |-
@@ -69,73 +63,40 @@ spec:
           metadata:
             type: object
           spec:
-            description: ConnectionSpec is the desired state.
+            description: DeployKeySpec is the desired state.
             properties:
-              baseURL:
+              publicKey:
                 description: |-
-                  BaseURL overrides the default git host endpoint for self-hosted
-                  installs (GitHub Enterprise Server, self-managed GitLab). Empty
-                  targets the provider's public SaaS endpoint.
-                maxLength: 2048
+                  PublicKey is an OpenSSH-format public key to register (bring your
+                  own). When empty the controller generates an ed25519 keypair and
+                  writes the private half to status.secretRef.
+                maxLength: 8192
                 type: string
-              owner:
+              readOnly:
+                description: ReadOnly registers the key without write (push) access.
+                type: boolean
+              repositoryRef:
                 description: |-
-                  Owner is the org or user under which repositories created via this
-                  Connection land. Must be an account the credential can write to.
-                maxLength: 100
+                  RepositoryRef names the Repository (same workspace) this key is
+                  installed on.
+                maxLength: 253
                 minLength: 1
                 type: string
-              provider:
-                description: 'Provider names the git hosting sub-provider. v1: github.'
-                enum:
-                - github
-                type: string
-              secretRef:
+              title:
                 description: |-
-                  SecretRef points at the Secret in the tenant workspace holding the
-                  credential. For type=pat the default key is "token".
-                properties:
-                  key:
-                    description: |-
-                      Key is the entry within the Secret's data holding the value. For a
-                      Connection PAT this defaults to "token"; for a DeployKey private
-                      key the controller writes "ssh-privatekey".
-                    maxLength: 253
-                    type: string
-                  name:
-                    description: Name of the Secret.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace of the Secret. Empty resolves to the provider's
-                      convention namespace ("default").
-                    maxLength: 253
-                    type: string
-                required:
-                - name
-                type: object
-              type:
-                description: 'Type selects the credential model. v1: pat.'
-                enum:
-                - pat
-                - github-app
-                - oauth
+                  Title is the human-readable label shown on the host. Empty uses
+                  metadata.name.
+                maxLength: 255
                 type: string
             required:
-            - owner
-            - provider
-            - secretRef
-            - type
+            - repositoryRef
             type: object
           status:
-            description: ConnectionStatus is the observed state.
+            description: DeployKeyStatus is the observed state.
             properties:
               conditions:
-                description: |-
-                  Conditions follows the standard Kubernetes conditions pattern. The
-                  Validated condition is True once the credential authenticates.
+                description: Conditions follows the standard Kubernetes conditions
+                  pattern.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -194,23 +155,41 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              login:
-                description: |-
-                  Login is the authenticated account the credential resolved to
-                  (e.g. the GitHub login). Empty until first successful validation.
-                maxLength: 100
+              keyID:
+                description: KeyID is the host-side id of the registered key.
+                maxLength: 64
                 type: string
               observedGeneration:
                 description: ObservedGeneration mirrors metadata.generation last reconciled.
                 format: int64
                 type: integer
-              scopes:
+              secretRef:
                 description: |-
-                  Scopes lists the granted token scopes the git host reported, when
-                  discoverable (GitHub returns them on the X-OAuth-Scopes header).
-                items:
-                  type: string
-                type: array
+                  SecretRef points at the Secret holding the generated private key
+                  (key "ssh-privatekey"). Only set when the controller generated the
+                  keypair (spec.publicKey was empty). The Secret is owned by this CR.
+                properties:
+                  key:
+                    description: |-
+                      Key is the entry within the Secret's data holding the value. For a
+                      Connection PAT this defaults to "token"; for a DeployKey private
+                      key the controller writes "ssh-privatekey".
+                    maxLength: 253
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the Secret. Empty resolves to the provider's
+                      convention namespace ("default").
+                    maxLength: 253
+                    type: string
+                required:
+                - name
+                type: object
             type: object
         required:
         - spec

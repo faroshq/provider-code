@@ -4,33 +4,36 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: deploykeys.code.kedge.faros.sh
+  name: packages.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
-    kind: DeployKey
-    listKind: DeployKeyList
-    plural: deploykeys
+    - faros
+    kind: Package
+    listKind: PackageList
+    plural: packages
     shortNames:
-    - gkey
-    singular: deploykey
+    - gpkg
+    singular: package
   scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.repositoryRef
       name: Repository
       type: string
-    - jsonPath: .spec.readOnly
-      name: ReadOnly
-      type: boolean
-    - jsonPath: .status.keyID
-      name: KeyID
+    - jsonPath: .status.packageName
+      name: Package
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
+    - jsonPath: .status.type
+      name: Type
       type: string
+    - jsonPath: .status.versionCount
+      name: Versions
+      type: integer
+    - jsonPath: .status.lastSyncTime
+      name: Synced
+      type: date
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -38,12 +41,17 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          DeployKey grants SSH access to a single Repository. It is the cross-provider
-          seam: when spec.publicKey is empty the controller generates a keypair,
-          registers the public half on the repository, and writes the private half to
-          a Secret in the tenant workspace (status.secretRef, owned by this CR so it
-          is garbage-collected on delete). Another provider (e.g. infrastructure) can
-          then mount that Secret to clone/push.
+          Package is the observed set of artifacts (container image, npm/maven package,
+          …) published under a Repository on the git host. Unlike the other code-provider
+          CRs it is NOT tenant-authored desired state: the PackageController (a crawler)
+          lists the host on a timer and reconciles one Package CR per published package,
+          so the portal can read them straight from kcp instead of hitting the host on
+          every page view (which GitHub rate-limits hard). Each Package is owned by its
+          Repository via an OwnerReference, so host packages disappear from kcp when the
+          Repository CR is deleted.
+
+          All descriptive fields live in status because the whole object is observed,
+          never desired; spec carries only the link back to the owning Repository.
         properties:
           apiVersion:
             description: |-
@@ -63,36 +71,25 @@ spec:
           metadata:
             type: object
           spec:
-            description: DeployKeySpec is the desired state.
+            description: |-
+              PackageSpec links the Package back to its owning Repository. Authored by the
+              PackageController on create and immutable thereafter — everything observed is
+              in status.
             properties:
-              publicKey:
-                description: |-
-                  PublicKey is an OpenSSH-format public key to register (bring your
-                  own). When empty the controller generates an ed25519 keypair and
-                  writes the private half to status.secretRef.
-                maxLength: 8192
-                type: string
-              readOnly:
-                description: ReadOnly registers the key without write (push) access.
-                type: boolean
               repositoryRef:
                 description: |-
-                  RepositoryRef names the Repository (same workspace) this key is
-                  installed on.
+                  RepositoryRef names the Repository (same workspace) this package is
+                  published under. Also mirrored onto the LabelRepository label so the
+                  portal can list a repository's packages with a label selector.
                 maxLength: 253
                 minLength: 1
-                type: string
-              title:
-                description: |-
-                  Title is the human-readable label shown on the host. Empty uses
-                  metadata.name.
-                maxLength: 255
                 type: string
             required:
             - repositoryRef
             type: object
           status:
-            description: DeployKeyStatus is the observed state.
+            description: PackageStatus is the observed package metadata as last crawled
+              from the host.
             properties:
               conditions:
                 description: Conditions follows the standard Kubernetes conditions
@@ -155,41 +152,83 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              keyID:
-                description: KeyID is the host-side id of the registered key.
-                maxLength: 64
+              htmlURL:
+                description: HTMLURL links to the package's browser page.
+                maxLength: 2048
+                type: string
+              imageRepository:
+                description: |-
+                  ImageRepository is the pullable registry path (no tag/digest) for image
+                  packages, e.g. "ghcr.io/owner/repo/component". Combine with a version's
+                  digest to form a deployable reference. Empty for non-image packages.
+                maxLength: 512
+                type: string
+              lastSyncTime:
+                description: LastSyncTime is when the crawler last refreshed this
+                  package from the host.
+                format: date-time
                 type: string
               observedGeneration:
                 description: ObservedGeneration mirrors metadata.generation last reconciled.
                 format: int64
                 type: integer
-              secretRef:
+              packageName:
                 description: |-
-                  SecretRef points at the Secret holding the generated private key
-                  (key "ssh-privatekey"). Only set when the controller generated the
-                  keypair (spec.publicKey was empty). The Secret is owned by this CR.
-                properties:
-                  key:
-                    description: |-
-                      Key is the entry within the Secret's data holding the value. For a
-                      Connection PAT this defaults to "token"; for a DeployKey private
-                      key the controller writes "ssh-privatekey".
-                    maxLength: 253
-                    type: string
-                  name:
-                    description: Name of the Secret.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace of the Secret. Empty resolves to the provider's
-                      convention namespace ("default").
-                    maxLength: 253
-                    type: string
-                required:
-                - name
-                type: object
+                  PackageName is the package's name on the host (the artifact name, which
+                  may differ from the Kubernetes object name).
+                maxLength: 255
+                type: string
+              type:
+                description: 'Type is the package ecosystem: container | docker |
+                  npm | maven | rubygems | nuget.'
+                maxLength: 32
+                type: string
+              updatedAt:
+                description: UpdatedAt is the host's last-updated time in RFC3339,
+                  or "" when unknown.
+                maxLength: 64
+                type: string
+              versionCount:
+                description: VersionCount is how many versions the host reports (0
+                  when unknown).
+                format: int64
+                type: integer
+              versions:
+                description: |-
+                  Versions is a bounded, most-recent-first list of the package's published
+                  versions with their tags and digest (populated for container/docker
+                  packages). It lets consumers resolve a build tag such as "sha-<commit>"
+                  to an immutable image digest.
+                items:
+                  description: |-
+                    PackageVersion is one published version of a package: an immutable digest and
+                    the tags pointing at it (a container image push creates one version).
+                  properties:
+                    createdAt:
+                      description: CreatedAt is the version's creation time in RFC3339,
+                        or "" when unknown.
+                      maxLength: 64
+                      type: string
+                    digest:
+                      description: Digest is the version's immutable content digest,
+                        e.g. "sha256:…".
+                      maxLength: 256
+                      type: string
+                    tags:
+                      description: Tags are the tags pointing at this digest (e.g.
+                        "sha-<commit>", "latest").
+                      items:
+                        type: string
+                      maxItems: 64
+                      type: array
+                  type: object
+                maxItems: 100
+                type: array
+              visibility:
+                description: Visibility is "public", "internal", or "private" (host-reported;
+                  may be empty).
+                maxLength: 32
+                type: string
             type: object
         required:
         - spec

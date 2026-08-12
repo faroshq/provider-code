@@ -1,12 +1,12 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260609-fc69fa2.connections.code.kedge.faros.sh
+  name: v260609-fc69fa2.connections.code.faros.sh
 spec:
-  group: code.kedge.faros.sh
+  group: code.faros.sh
   names:
     categories:
-    - kedge
+    - faros
     kind: Connection
     listKind: ConnectionList
     plural: connections
