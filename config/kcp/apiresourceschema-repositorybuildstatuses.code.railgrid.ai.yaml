@@ -1,32 +1,29 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260609-fc69fa2.connections.code.faros.sh
+  name: v260712-dabfd8e.repositorybuildstatuses.code.railgrid.ai
 spec:
-  group: code.faros.sh
+  group: code.railgrid.ai
   names:
     categories:
-    - faros
-    kind: Connection
-    listKind: ConnectionList
-    plural: connections
+    - railgrid
+    kind: RepositoryBuildStatus
+    listKind: RepositoryBuildStatusList
+    plural: repositorybuildstatuses
     shortNames:
-    - gconn
-    singular: connection
+    - gbuildstatus
+    singular: repositorybuildstatus
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.provider
-      name: Provider
+    - jsonPath: .spec.repositoryRef
+      name: Repository
       type: string
-    - jsonPath: .spec.owner
-      name: Owner
+    - jsonPath: .status.phase
+      name: Phase
       type: string
-    - jsonPath: .status.login
-      name: Login
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Validated")].status
-      name: Validated
+    - jsonPath: .status.run.conclusion
+      name: Conclusion
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -34,18 +31,12 @@ spec:
     name: v1alpha1
     schema:
       description: |-
-        Connection binds a tenant to one git hosting account. It is the
-        credential anchor that Repository / DeployKey / Collaborator reference:
-        every git operation runs against the account this Connection authenticates.
-
-        The credential itself never lives on the CR — spec.secretRef points at a
-        Secret in the tenant workspace holding the token. The ConnectionController
-        resolves that Secret, calls the git host to verify it, and records the
-        authenticated login + granted scopes in status.
-
-        Credential type is pluggable via spec.type so the PAT model shipped in v1
-        can grow a GitHub App installation or OAuth flow later without changing any
-        consumer of this CR.
+        RepositoryBuildStatus is a transient request to inspect (or re-run) a
+        managed Repository's CI build workflow through the host's Actions API. It is
+        the credentialed read the tenant-facing MCP layer cannot do itself: the
+        controller resolves the Connection credential, queries the host, and writes
+        the run status — including failed jobs' log tails — back onto status. The
+        build-doctor consumes it to diagnose and retry a broken build.
       properties:
         apiVersion:
           description: |-
@@ -65,73 +56,51 @@ spec:
         metadata:
           type: object
         spec:
-          description: ConnectionSpec is the desired state.
+          description: RepositoryBuildStatusSpec is the desired inspection/re-run
+            request.
           properties:
-            baseURL:
-              description: |-
-                BaseURL overrides the default git host endpoint for self-hosted
-                installs (GitHub Enterprise Server, self-managed GitLab). Empty
-                targets the provider's public SaaS endpoint.
-              maxLength: 2048
+            action:
+              description: Action selects status (default) or rerun.
+              enum:
+              - status
+              - rerun
               type: string
-            owner:
+            maxLogLines:
+              description: MaxLogLines caps the failure-log tail per failed job (status
+                action).
+              maximum: 1000
+              minimum: 1
+              type: integer
+            ref:
               description: |-
-                Owner is the org or user under which repositories created via this
-                Connection land. Must be an account the credential can write to.
-              maxLength: 100
+                Ref is the commit SHA to inspect (status) or the branch to re-run on
+                (rerun). Empty inspects the most recent run / re-runs the default branch.
+              maxLength: 255
+              type: string
+            repositoryRef:
+              description: RepositoryRef names the Repository (same workspace) whose
+                build to inspect.
+              maxLength: 253
               minLength: 1
               type: string
-            provider:
-              description: 'Provider names the git hosting sub-provider. v1: github.'
-              enum:
-              - github
-              type: string
-            secretRef:
+            workflowFileName:
               description: |-
-                SecretRef points at the Secret in the tenant workspace holding the
-                credential. For type=pat the default key is "token".
-              properties:
-                key:
-                  description: |-
-                    Key is the entry within the Secret's data holding the value. For a
-                    Connection PAT this defaults to "token"; for a DeployKey private
-                    key the controller writes "ssh-privatekey".
-                  maxLength: 253
-                  type: string
-                name:
-                  description: Name of the Secret.
-                  maxLength: 253
-                  minLength: 1
-                  type: string
-                namespace:
-                  description: |-
-                    Namespace of the Secret. Empty resolves to the provider's
-                    convention namespace ("default").
-                  maxLength: 253
-                  type: string
-              required:
-              - name
-              type: object
-            type:
-              description: 'Type selects the credential model. v1: pat.'
-              enum:
-              - pat
-              - github-app
-              - oauth
+                WorkflowFileName is the workflow file to inspect or dispatch
+                (e.g. "railgrid-app-studio-build.yml").
+              maxLength: 255
+              minLength: 1
               type: string
           required:
-          - owner
-          - provider
-          - secretRef
-          - type
+          - repositoryRef
+          - workflowFileName
           type: object
         status:
-          description: ConnectionStatus is the observed state.
+          description: RepositoryBuildStatusStatus is the observed result.
           properties:
+            completedAt:
+              format: date-time
+              type: string
             conditions:
-              description: |-
-                Conditions follows the standard Kubernetes conditions pattern. The
-                Validated condition is True once the credential authenticates.
               items:
                 description: Condition contains details for one aspect of the current
                   state of this API Resource.
@@ -190,23 +159,56 @@ spec:
               x-kubernetes-list-map-keys:
               - type
               x-kubernetes-list-type: map
-            login:
-              description: |-
-                Login is the authenticated account the credential resolved to
-                (e.g. the GitHub login). Empty until first successful validation.
-              maxLength: 100
-              type: string
+            dispatched:
+              description: Dispatched is true when a rerun action successfully fired.
+              type: boolean
             observedGeneration:
-              description: ObservedGeneration mirrors metadata.generation last reconciled.
               format: int64
               type: integer
-            scopes:
-              description: |-
-                Scopes lists the granted token scopes the git host reported, when
-                discoverable (GitHub returns them on the X-OAuth-Scopes header).
-              items:
-                type: string
-              type: array
+            phase:
+              description: Phase is the coarse status for clients that do not parse
+                conditions.
+              type: string
+            run:
+              description: Run is the inspected run (status action).
+              properties:
+                conclusion:
+                  type: string
+                found:
+                  description: Found is false when no run exists for the request.
+                  type: boolean
+                headSHA:
+                  type: string
+                htmlURL:
+                  type: string
+                jobs:
+                  items:
+                    description: RepositoryBuildStatusJob is one job of the inspected
+                      run.
+                    properties:
+                      conclusion:
+                        description: Conclusion is success | failure | cancelled |
+                          ... | "" while running.
+                        type: string
+                      failureLog:
+                        description: FailureLog is a bounded tail of the job's logs,
+                          set only for a failed job.
+                        type: string
+                      name:
+                        type: string
+                      status:
+                        description: Status is queued | in_progress | completed.
+                        type: string
+                    type: object
+                  type: array
+                runID:
+                  format: int64
+                  type: integer
+                status:
+                  type: string
+              required:
+              - found
+              type: object
           type: object
       required:
       - spec

@@ -1,12 +1,12 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260704-6d52bca.repositorycheckouts.code.faros.sh
+  name: v260704-6d52bca.repositorycheckouts.code.railgrid.ai
 spec:
-  group: code.faros.sh
+  group: code.railgrid.ai
   names:
     categories:
-    - faros
+    - railgrid
     kind: RepositoryCheckout
     listKind: RepositoryCheckoutList
     plural: repositorycheckouts

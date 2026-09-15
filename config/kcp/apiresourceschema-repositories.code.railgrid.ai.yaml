@@ -1,29 +1,32 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260609-fc69fa2.deploykeys.code.faros.sh
+  name: v260609-fc69fa2.repositories.code.railgrid.ai
 spec:
-  group: code.faros.sh
+  group: code.railgrid.ai
   names:
     categories:
-    - faros
-    kind: DeployKey
-    listKind: DeployKeyList
-    plural: deploykeys
+    - railgrid
+    kind: Repository
+    listKind: RepositoryList
+    plural: repositories
     shortNames:
-    - gkey
-    singular: deploykey
+    - grepo
+    singular: repository
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.repositoryRef
-      name: Repository
+    - jsonPath: .spec.connectionRef
+      name: Connection
       type: string
-    - jsonPath: .spec.readOnly
-      name: ReadOnly
-      type: boolean
-    - jsonPath: .status.keyID
-      name: KeyID
+    - jsonPath: .spec.name
+      name: Repo
+      type: string
+    - jsonPath: .spec.visibility
+      name: Visibility
+      type: string
+    - jsonPath: .status.htmlURL
+      name: URL
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -34,12 +37,10 @@ spec:
     name: v1alpha1
     schema:
       description: |-
-        DeployKey grants SSH access to a single Repository. It is the cross-provider
-        seam: when spec.publicKey is empty the controller generates a keypair,
-        registers the public half on the repository, and writes the private half to
-        a Secret in the tenant workspace (status.secretRef, owned by this CR so it
-        is garbage-collected on delete). Another provider (e.g. infrastructure) can
-        then mount that Secret to clone/push.
+        Repository is the desired state for one git repository on the host the
+        referenced Connection authenticates. The RepositoryController creates (and,
+        on delete, removes) the repo via the sub-provider backend and records its
+        URLs + host-side id in status.
       properties:
         apiVersion:
           description: |-
@@ -59,37 +60,63 @@ spec:
         metadata:
           type: object
         spec:
-          description: DeployKeySpec is the desired state.
+          description: RepositorySpec is the desired state.
           properties:
-            publicKey:
+            autoInit:
               description: |-
-                PublicKey is an OpenSSH-format public key to register (bring your
-                own). When empty the controller generates an ed25519 keypair and
-                writes the private half to status.secretRef.
-              maxLength: 8192
-              type: string
-            readOnly:
-              description: ReadOnly registers the key without write (push) access.
+                AutoInit creates an initial commit (README) so the repository has a
+                default branch immediately. Required if DeployKeys/clones must
+                succeed right after creation.
               type: boolean
-            repositoryRef:
-              description: |-
-                RepositoryRef names the Repository (same workspace) this key is
-                installed on.
+            connectionRef:
+              description: ConnectionRef names the Connection (same workspace) whose
+                credential
               maxLength: 253
               minLength: 1
               type: string
-            title:
+            defaultBranch:
               description: |-
-                Title is the human-readable label shown on the host. Empty uses
-                metadata.name.
+                DefaultBranch names the initial default branch. Empty uses the host
+                default (e.g. "main").
               maxLength: 255
               type: string
+            description:
+              description: Description is set as the repository description on the
+                host.
+              maxLength: 2048
+              type: string
+            name:
+              description: |-
+                Name is the repository name on the git host (the path segment after
+                the owner). DNS-ish; the host enforces its own rules.
+              maxLength: 100
+              minLength: 1
+              type: string
+            owner:
+              description: |-
+                Owner overrides the Connection's owner for this single repository
+                (e.g. to create under a different org the same credential controls).
+                Empty inherits Connection.spec.owner.
+              maxLength: 100
+              type: string
+            visibility:
+              description: Visibility defaults to private when empty.
+              enum:
+              - private
+              - public
+              - internal
+              type: string
           required:
-          - repositoryRef
+          - connectionRef
+          - name
           type: object
         status:
-          description: DeployKeyStatus is the observed state.
+          description: RepositoryStatus is the observed state.
           properties:
+            cloneURL:
+              description: CloneURL is the HTTPS clone URL.
+              maxLength: 2048
+              type: string
             conditions:
               description: Conditions follows the standard Kubernetes conditions pattern.
               items:
@@ -150,41 +177,22 @@ spec:
               x-kubernetes-list-map-keys:
               - type
               x-kubernetes-list-type: map
-            keyID:
-              description: KeyID is the host-side id of the registered key.
-              maxLength: 64
+            htmlURL:
+              description: HTMLURL is the browser URL of the repository.
+              maxLength: 2048
               type: string
             observedGeneration:
               description: ObservedGeneration mirrors metadata.generation last reconciled.
               format: int64
               type: integer
-            secretRef:
-              description: |-
-                SecretRef points at the Secret holding the generated private key
-                (key "ssh-privatekey"). Only set when the controller generated the
-                keypair (spec.publicKey was empty). The Secret is owned by this CR.
-              properties:
-                key:
-                  description: |-
-                    Key is the entry within the Secret's data holding the value. For a
-                    Connection PAT this defaults to "token"; for a DeployKey private
-                    key the controller writes "ssh-privatekey".
-                  maxLength: 253
-                  type: string
-                name:
-                  description: Name of the Secret.
-                  maxLength: 253
-                  minLength: 1
-                  type: string
-                namespace:
-                  description: |-
-                    Namespace of the Secret. Empty resolves to the provider's
-                    convention namespace ("default").
-                  maxLength: 253
-                  type: string
-              required:
-              - name
-              type: object
+            repoID:
+              description: RepoID is the host-side numeric/opaque id of the repository.
+              maxLength: 64
+              type: string
+            sshURL:
+              description: SSHURL is the SSH clone URL (used together with a DeployKey).
+              maxLength: 2048
+              type: string
           type: object
       required:
       - spec

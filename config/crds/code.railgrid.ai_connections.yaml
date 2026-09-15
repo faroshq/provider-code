@@ -4,32 +4,32 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: collaborators.code.faros.sh
+  name: connections.code.railgrid.ai
 spec:
-  group: code.faros.sh
+  group: code.railgrid.ai
   names:
     categories:
-    - faros
-    kind: Collaborator
-    listKind: CollaboratorList
-    plural: collaborators
+    - railgrid
+    kind: Connection
+    listKind: ConnectionList
+    plural: connections
     shortNames:
-    - gcollab
-    singular: collaborator
+    - gconn
+    singular: connection
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.repositoryRef
-      name: Repository
+    - jsonPath: .spec.provider
+      name: Provider
       type: string
-    - jsonPath: .spec.username
-      name: User
+    - jsonPath: .spec.owner
+      name: Owner
       type: string
-    - jsonPath: .spec.permission
-      name: Permission
+    - jsonPath: .status.login
+      name: Login
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
+    - jsonPath: .status.conditions[?(@.type=="Validated")].status
+      name: Validated
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -38,10 +38,18 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Collaborator grants a host user a permission level on a single Repository.
-          Kept as its own CR (rather than an array on Repository) so each grant has
-          its own lifecycle, finalizer, and status — notably the InvitationPending
-          state the host reports when an outside collaborator must accept first.
+          Connection binds a tenant to one git hosting account. It is the
+          credential anchor that Repository / DeployKey / Collaborator reference:
+          every git operation runs against the account this Connection authenticates.
+
+          The credential itself never lives on the CR — spec.secretRef points at a
+          Secret in the tenant workspace holding the token. The ConnectionController
+          resolves that Secret, calls the git host to verify it, and records the
+          authenticated login + granted scopes in status.
+
+          Credential type is pluggable via spec.type so the PAT model shipped in v1
+          can grow a GitHub App installation or OAuth flow later without changing any
+          consumer of this CR.
         properties:
           apiVersion:
             description: |-
@@ -61,38 +69,73 @@ spec:
           metadata:
             type: object
           spec:
-            description: CollaboratorSpec is the desired state.
+            description: ConnectionSpec is the desired state.
             properties:
-              permission:
-                description: Permission defaults to pull when empty.
-                enum:
-                - pull
-                - push
-                - admin
+              baseURL:
+                description: |-
+                  BaseURL overrides the default git host endpoint for self-hosted
+                  installs (GitHub Enterprise Server, self-managed GitLab). Empty
+                  targets the provider's public SaaS endpoint.
+                maxLength: 2048
                 type: string
-              repositoryRef:
-                description: RepositoryRef names the Repository (same workspace) this
-                  grant is on.
-                maxLength: 253
-                minLength: 1
-                type: string
-              username:
-                description: Username is the host login to grant access to.
+              owner:
+                description: |-
+                  Owner is the org or user under which repositories created via this
+                  Connection land. Must be an account the credential can write to.
                 maxLength: 100
                 minLength: 1
                 type: string
+              provider:
+                description: 'Provider names the git hosting sub-provider. v1: github.'
+                enum:
+                - github
+                type: string
+              secretRef:
+                description: |-
+                  SecretRef points at the Secret in the tenant workspace holding the
+                  credential. For type=pat the default key is "token".
+                properties:
+                  key:
+                    description: |-
+                      Key is the entry within the Secret's data holding the value. For a
+                      Connection PAT this defaults to "token"; for a DeployKey private
+                      key the controller writes "ssh-privatekey".
+                    maxLength: 253
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the Secret. Empty resolves to the provider's
+                      convention namespace ("default").
+                    maxLength: 253
+                    type: string
+                required:
+                - name
+                type: object
+              type:
+                description: 'Type selects the credential model. v1: pat.'
+                enum:
+                - pat
+                - github-app
+                - oauth
+                type: string
             required:
-            - repositoryRef
-            - username
+            - owner
+            - provider
+            - secretRef
+            - type
             type: object
           status:
-            description: CollaboratorStatus is the observed state.
+            description: ConnectionStatus is the observed state.
             properties:
               conditions:
                 description: |-
                   Conditions follows the standard Kubernetes conditions pattern. The
-                  InvitationPending condition is True while the host reports the user
-                  has been invited but not yet accepted.
+                  Validated condition is True once the credential authenticates.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -151,16 +194,23 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              invitationID:
+              login:
                 description: |-
-                  InvitationID is the host-side id of a pending invitation, set while
-                  an outside collaborator has not yet accepted.
-                maxLength: 64
+                  Login is the authenticated account the credential resolved to
+                  (e.g. the GitHub login). Empty until first successful validation.
+                maxLength: 100
                 type: string
               observedGeneration:
                 description: ObservedGeneration mirrors metadata.generation last reconciled.
                 format: int64
                 type: integer
+              scopes:
+                description: |-
+                  Scopes lists the granted token scopes the git host reported, when
+                  discoverable (GitHub returns them on the X-OAuth-Scopes header).
+                items:
+                  type: string
+                type: array
             type: object
         required:
         - spec

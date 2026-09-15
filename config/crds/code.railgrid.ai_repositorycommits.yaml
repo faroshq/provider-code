@@ -4,12 +4,12 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: repositorycommits.code.faros.sh
+  name: repositorycommits.code.railgrid.ai
 spec:
-  group: code.faros.sh
+  group: code.railgrid.ai
   names:
     categories:
-    - faros
+    - railgrid
     kind: RepositoryCommit
     listKind: RepositoryCommitList
     plural: repositorycommits

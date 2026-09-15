@@ -1,12 +1,12 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260609-fc69fa2.collaborators.code.faros.sh
+  name: v260609-fc69fa2.collaborators.code.railgrid.ai
 spec:
-  group: code.faros.sh
+  group: code.railgrid.ai
   names:
     categories:
-    - faros
+    - railgrid
     kind: Collaborator
     listKind: CollaboratorList
     plural: collaborators

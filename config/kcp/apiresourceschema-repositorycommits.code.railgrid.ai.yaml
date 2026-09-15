@@ -1,12 +1,12 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260802-8d0bfc17.repositorycommits.code.faros.sh
+  name: v260802-8d0bfc17.repositorycommits.code.railgrid.ai
 spec:
-  group: code.faros.sh
+  group: code.railgrid.ai
   names:
     categories:
-    - faros
+    - railgrid
     kind: RepositoryCommit
     listKind: RepositoryCommitList
     plural: repositorycommits
